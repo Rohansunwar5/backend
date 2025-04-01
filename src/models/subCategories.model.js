@@ -4,10 +4,12 @@ const subCategorySchema = new mongoose.Schema({
     name: { 
         type: String,
         required: true,
+        unique: true,
     },
     parentCategory: {
-        type: String,
-        required: true
+        type: Schema.Types.ObjectId,
+        ref: "Category"
+        // required: true
     },
     products: [
         {
@@ -17,7 +19,8 @@ const subCategorySchema = new mongoose.Schema({
     ],
     description: {
         type: String,
-        required: true
+        // required: true
+        default: '',
     },
     banners: [
         {

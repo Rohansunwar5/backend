@@ -6,6 +6,8 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 import xlsx from "xlsx"; // Import the xlsx library
 import fs from "fs";
 import { Collection } from "../models/collections.model.js";
+import { Category } from "../models/categories.model.js";
+import { SubCategory } from "../models/subCategories.model.js";
 
 const getAllProducts = asyncHandler( async (req, res) => {
 
@@ -174,7 +176,6 @@ const createAProduct = asyncHandler( async (req, res) => {
 
 const uploadProductsFromExcel = asyncHandler(async (req, res) => {
     try {
-
         if (!req.file) {
             throw new ApiError(400, "No file uploaded.");
         }
@@ -184,62 +185,132 @@ const uploadProductsFromExcel = asyncHandler(async (req, res) => {
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const data = xlsx.utils.sheet_to_json(worksheet);
-        for (const row of data) {
-            const {
-                productId,
-                collections,
-                name,
-                goldWeight,
-                diamondWeight,
-                multiDiamondWeight,
-                shapeOfSolitare,
-                goldColor,
-                gender
-            } = row;
 
-            const collectionNames = collections.split(",").map((name) => name.trim().toLowerCase());
-            const collectionIds = [];
-            for (const collectionName of collectionNames) {
-                let collectionDoc = await Collection.findOne({ name: collectionName });
-                if (!collectionDoc) {
-                    collectionDoc = await Collection.create({ name: collectionName });
-                    console.log(`New collection created: ${collectionDoc.name}`);
-                }
-                collectionIds.push(collectionDoc._id); 
+        // Enhanced number converter with NaN handling
+        const safeNumber = (value) => {
+            if (value === null || value === undefined || value === '' || value === 'null') {
+                return null;
             }
-        
-            const product = await Product.findOneAndUpdate(
-                { productId },
-                {
+            const num = Number(value);
+            return isNaN(num) ? null : num; // Return null for NaN values
+        };
+
+        for (const row of data) {
+            try {
+                const {
+                    productId,
+                    name,
+                    category,
+                    subCategory,
+                    collections,
+                    netWeight,
+                    grossWeight,
+                    solitareWeight,
+                    multiDiamondWeight,
+                    diamondWeight,
+                    noOfSolitares,
+                    noOfMultiDiamonds,
+                    shapeOfSolitare,
+                    shapeOfMultiDiamonds,
+                    shapeOfPointers,
+                    gender,
+                    goldColour
+                } = row;
+
+                // Process collections
+                const collectionNames = collections?.split("&").map(name => name.trim().toLowerCase()) || [];
+                const collectionIds = [];
+                for (const collectionName of collectionNames) {
+                    let collectionDoc = await Collection.findOne({ name: collectionName });
+                    if (!collectionDoc) {
+                        collectionDoc = await Collection.create({ name: collectionName });
+                        console.log(`New collection created: ${collectionDoc.name}`);
+                    }
+                    collectionIds.push(collectionDoc._id);
+                }
+
+                // Process category
+                let categoryDoc = null;
+                if (category) {
+                    categoryDoc = await Category.findOne({ name: category.trim().toLowerCase() });
+                    if (!categoryDoc) {
+                        categoryDoc = await Category.create({ 
+                            name: category.trim().toLowerCase(),
+                            description: "Imported from Excel"
+                        });
+                        console.log(`New category created: ${categoryDoc.name}`);
+                    }
+                }
+
+                // Process subcategories
+                const subCategoryIds = [];
+                if (subCategory) {
+                    const subCategoryNames = subCategory.split("&").map(name => name.trim().toLowerCase());
+                    for (const subCatName of subCategoryNames) {
+                        let subCategoryDoc = await SubCategory.findOne({ name: subCatName });
+                        if (!subCategoryDoc) {
+                            subCategoryDoc = await SubCategory.create({ 
+                                name: subCatName,
+                                description: "Imported from Excel",
+                                parentCategory: categoryDoc?._id
+                            });
+                            console.log(`New subcategory created: ${subCatName}`);
+                        }
+                        subCategoryIds.push(subCategoryDoc._id);
+                    }
+                }
+
+                // Create or update product with safe number conversion
+                const productData = {
                     productId,
                     code: productId,
                     name,
+                    category: categoryDoc?._id,
+                    subCategories: subCategoryIds,
                     collections: collectionIds,
-                    goldWeight,
-                    diamondWeight,
-                    multiDiamondWeight,
+                    netWeight: safeNumber(netWeight),
+                    grossWeight: safeNumber(grossWeight),
+                    solitareWeight: safeNumber(solitareWeight),
+                    diamondWeight: safeNumber(diamondWeight),
+                    multiDiamondWeight: safeNumber(multiDiamondWeight),
+                    noOfSolitares: safeNumber(noOfSolitares),
+                    noOfMultiDiamonds: safeNumber(noOfMultiDiamonds),
                     shapeOfSolitare,
-                    goldColor: goldColor.split(",").map((color) => color.trim().toLowerCase()),
-                    gender
-                },
-                { upsert: true, new: true }
-            );
-         
-            for (const collectionId of collectionIds) {
-                await Collection.findByIdAndUpdate(
-                    collectionId,
-                    { $addToSet: { products: product._id } },
-                    { new: true }
+                    shapeOfMultiDiamonds,
+                    diaPointers: safeNumber(shapeOfPointers), // Handles NaN
+                    gender: gender?.toLowerCase(),
+                    goldColor: goldColour?.split("&").map(color => color.trim().toLowerCase()) || []
+                };
+
+                const product = await Product.findOneAndUpdate(
+                    { productId },
+                    productData,
+                    { upsert: true, new: true }
                 );
+
+                // Update collections with product reference
+                for (const collectionId of collectionIds) {
+                    await Collection.findByIdAndUpdate(
+                        collectionId,
+                        { $addToSet: { products: product._id } },
+                        { new: true }
+                    );
+                }
+
+                console.log(`Product processed: ${product.name}`);
+            } catch (rowError) {
+                console.error(`Error processing row with productId ${row.productId || 'unknown'}:`, rowError);
+                // Continue with next row even if one fails
             }
-            console.log(`Product processed: ${product.name}`);
         }
+
         fs.unlinkSync(req.file.path);
-        return res
-            .status(200)
-            .json(new ApiResponse(200, {}, "Products uploaded successfully."));
+        return res.status(200).json(new ApiResponse(200, {}, "Products uploaded successfully."));
     } catch (error) {
         console.error("Error uploading products:", error);
+        if (req.file?.path && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
         throw new ApiError(500, error.message || "Internal Server Error");
     }
 });
